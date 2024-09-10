@@ -2,7 +2,7 @@ import { Address, comment, internal } from '@ton/core';
 import BigNumber from 'bignumber.js';
 import { APIConfig } from '../../entries/apis';
 import { CellSigner } from '../../entries/signer';
-import { WalletState, WalletVersion } from '../../entries/wallet';
+import { TonWalletStandard, WalletVersion } from '../../entries/wallet';
 import { BlockchainApi, EmulationApi } from '../../tonApiV2';
 import { unShiftedDecimals } from '../../utils/balance';
 import { walletContractFromState } from '../wallet/contractService';
@@ -32,7 +32,7 @@ export type TransferMessage = {
 
 export const MAX_ALLOWED_WALLET_MSGS = {
     [WalletVersion.V5R1]: 255,
-    [WalletVersion.V5beta]: 255,
+    [WalletVersion.V5_BETA]: 255,
     [WalletVersion.V4R2]: 4,
     [WalletVersion.V4R1]: 4,
     [WalletVersion.V3R2]: 4,
@@ -51,7 +51,7 @@ const checkMaxAllowedMessagesInMultiTransferOrDie = (
 
 export const estimateTonMultiTransfer = async (
     api: APIConfig,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     transferMessages: TransferMessage[]
 ) => {
     const timestamp = await getServerTime(api);
@@ -60,10 +60,7 @@ export const estimateTonMultiTransfer = async (
     const [wallet, seqno] = await getWalletBalance(api, walletState);
     checkWalletBalanceOrDie(total, wallet);
 
-    checkMaxAllowedMessagesInMultiTransferOrDie(
-        transferMessages.length,
-        walletState.active.version
-    );
+    checkMaxAllowedMessagesInMultiTransferOrDie(transferMessages.length, walletState.version);
 
     const cell = await createTonMultiTransfer(
         timestamp,
@@ -75,16 +72,16 @@ export const estimateTonMultiTransfer = async (
 
     const emulationApi = new EmulationApi(api.tonApiV2);
 
-    return emulationApi.emulateMessageToAccountEvent({
-        ignoreSignatureCheck: true,
-        accountId: wallet.address,
-        decodeMessageRequest: { boc: cell.toString('base64') }
+    const { event } = await emulationApi.emulateMessageToWallet({
+        emulateMessageToWalletRequest: { boc: cell.toString('base64') }
     });
+
+    return event;
 };
 
 export const sendTonMultiTransfer = async (
     api: APIConfig,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     transferMessages: TransferMessage[],
     feeEstimate: BigNumber,
     signer: CellSigner
@@ -95,10 +92,7 @@ export const sendTonMultiTransfer = async (
     const [wallet, seqno] = await getWalletBalance(api, walletState);
     checkWalletBalanceOrDie(total.plus(feeEstimate), wallet);
 
-    checkMaxAllowedMessagesInMultiTransferOrDie(
-        transferMessages.length,
-        walletState.active.version
-    );
+    checkMaxAllowedMessagesInMultiTransferOrDie(transferMessages.length, walletState.version);
 
     const cell = await createTonMultiTransfer(
         timestamp,
@@ -118,7 +112,7 @@ export const sendTonMultiTransfer = async (
 const createTonMultiTransfer = async (
     timestamp: number,
     seqno: number,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     transferMessages: TransferMessage[],
     signer: CellSigner
 ) => {
@@ -144,7 +138,7 @@ const createTonMultiTransfer = async (
 
 export const estimateJettonMultiTransfer = async (
     api: APIConfig,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     jettonWalletAddress: string,
     transferMessages: TransferMessage[]
 ) => {
@@ -156,10 +150,7 @@ export const estimateJettonMultiTransfer = async (
         wallet
     );
 
-    checkMaxAllowedMessagesInMultiTransferOrDie(
-        transferMessages.length,
-        walletState.active.version
-    );
+    checkMaxAllowedMessagesInMultiTransferOrDie(transferMessages.length, walletState.version);
 
     const cell = await createJettonMultiTransfer(
         timestamp,
@@ -173,16 +164,15 @@ export const estimateJettonMultiTransfer = async (
 
     const emulationApi = new EmulationApi(api.tonApiV2);
 
-    return emulationApi.emulateMessageToAccountEvent({
-        ignoreSignatureCheck: true,
-        accountId: wallet.address,
-        decodeMessageRequest: { boc: cell.toString('base64') }
+    const { event } = await emulationApi.emulateMessageToWallet({
+        emulateMessageToWalletRequest: { boc: cell.toString('base64') }
     });
+    return event;
 };
 
 export const sendJettonMultiTransfer = async (
     api: APIConfig,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     jettonWalletAddress: string,
     transferMessages: TransferMessage[],
     feeEstimate: BigNumber,
@@ -192,10 +182,7 @@ export const sendJettonMultiTransfer = async (
 
     const [wallet, seqno] = await getWalletBalance(api, walletState);
 
-    checkMaxAllowedMessagesInMultiTransferOrDie(
-        transferMessages.length,
-        walletState.active.version
-    );
+    checkMaxAllowedMessagesInMultiTransferOrDie(transferMessages.length, walletState.version);
 
     const attachValue = feeEstimate.div(transferMessages.length).plus(unShiftedDecimals(0.05));
     checkWalletBalanceOrDie(attachValue.multipliedBy(transferMessages.length), wallet);
@@ -210,14 +197,12 @@ export const sendJettonMultiTransfer = async (
         signEstimateMessage
     );
 
-    const res = await new EmulationApi(api.tonApiV2).emulateMessageToAccountEvent({
-        ignoreSignatureCheck: true,
-        accountId: wallet.address,
-        decodeMessageRequest: { boc: estimationCell.toString('base64') }
+    const res = await new EmulationApi(api.tonApiV2).emulateMessageToWallet({
+        emulateMessageToWalletRequest: { boc: estimationCell.toString('base64') }
     });
 
     if (
-        res.actions
+        res.event.actions
             .filter(action => action.type === 'JettonTransfer')
             .some(action => action.status !== 'ok')
     ) {
@@ -243,7 +228,7 @@ export const sendJettonMultiTransfer = async (
 const createJettonMultiTransfer = async (
     timestamp: number,
     seqno: number,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     jettonWalletAddress: string,
     transferMessages: TransferMessage[],
     attachValue: BigNumber,
@@ -265,9 +250,10 @@ const createJettonMultiTransfer = async (
                     queryId: getTonkeeperQueryId(),
                     jettonAmount: BigInt(msg.weiAmount.toFixed(0)),
                     toAddress: Address.parse(msg.to),
-                    responseAddress: Address.parse(walletState.active.rawAddress),
+                    responseAddress: Address.parse(walletState.rawAddress),
                     forwardAmount: jettonTransferForwardAmount,
-                    forwardPayload: msg.comment ? comment(msg.comment) : null
+                    forwardPayload: msg.comment ? comment(msg.comment) : null,
+                    customPayload: null
                 })
             })
         )
@@ -285,7 +271,7 @@ export type NftTransferMessage = {
 export const createNftMultiTransfer = async (
     timestamp: number,
     seqno: number,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     transferMessages: NftTransferMessage[],
     attachValue: BigNumber,
     signer: CellSigner
@@ -305,7 +291,7 @@ export const createNftMultiTransfer = async (
                 body: nftTransferBody({
                     queryId: getTonkeeperQueryId(),
                     newOwnerAddress: Address.parse(msg.to),
-                    responseAddress: Address.parse(walletState.active.rawAddress),
+                    responseAddress: Address.parse(walletState.rawAddress),
                     forwardAmount: nftTransferForwardAmount,
                     forwardPayload: msg.comment ? comment(msg.comment) : null
                 })
@@ -318,7 +304,7 @@ export const createNftMultiTransfer = async (
 
 export const sendNftMultiTransfer = async (
     api: APIConfig,
-    walletState: WalletState,
+    walletState: TonWalletStandard,
     transferMessages: NftTransferMessage[],
     feeEstimate: BigNumber,
     signer: CellSigner
@@ -327,10 +313,7 @@ export const sendNftMultiTransfer = async (
 
     const [wallet, seqno] = await getWalletBalance(api, walletState);
 
-    checkMaxAllowedMessagesInMultiTransferOrDie(
-        transferMessages.length,
-        walletState.active.version
-    );
+    checkMaxAllowedMessagesInMultiTransferOrDie(transferMessages.length, walletState.version);
 
     const attachValue = feeEstimate.div(transferMessages.length).plus(unShiftedDecimals(0.03));
     checkWalletBalanceOrDie(attachValue.multipliedBy(transferMessages.length), wallet);
@@ -344,14 +327,12 @@ export const sendNftMultiTransfer = async (
         signEstimateMessage
     );
 
-    const res = await new EmulationApi(api.tonApiV2).emulateMessageToAccountEvent({
-        ignoreSignatureCheck: true,
-        accountId: wallet.address,
-        decodeMessageRequest: { boc: estimationCell.toString('base64') }
+    const res = await new EmulationApi(api.tonApiV2).emulateMessageToWallet({
+        emulateMessageToWalletRequest: { boc: estimationCell.toString('base64') }
     });
 
     if (
-        res.actions
+        res.event.actions
             .filter(action => action.type === 'JettonTransfer')
             .some(action => action.status !== 'ok')
     ) {

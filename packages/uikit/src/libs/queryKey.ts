@@ -1,3 +1,5 @@
+import { InvalidateQueryFilters } from '@tanstack/react-query';
+
 export enum QueryKey {
     account = 'account',
     wallet = 'wallet',
@@ -20,6 +22,9 @@ export enum QueryKey {
     system = 'system',
     syncDate = 'syncDate',
     analytics = 'analytics',
+    language = 'language',
+    walletVersions = 'walletVersions',
+    globalPreferencesConfig = 'globalPreferencesConfig',
 
     tonConnectConnection = 'tonConnectConnection',
     tonConnectLastEventId = 'tonConnectLastEventId',
@@ -33,6 +38,7 @@ export enum QueryKey {
     distribution = 'distribution',
     pro = 'pro',
     proBackup = 'proBackup',
+    allWalletsTotalBalance = 'allWalletsTotalBalance',
 
     dashboardColumnsForm = 'dashboardColumnsForm',
     dashboardColumns = 'dashboardColumns',
@@ -59,4 +65,10 @@ export enum TonkeeperApiKey {
     config,
     stock,
     fiat
+}
+
+export function anyOfKeysParts(...keys: string[]): InvalidateQueryFilters {
+    return {
+        predicate: q => q.queryKey.some(element => keys.includes(element as string))
+    };
 }

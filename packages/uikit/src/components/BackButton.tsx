@@ -1,5 +1,5 @@
 import { IAppSdk } from '@tonkeeper/core/dist/AppSdk';
-import React, { FC, useCallback, useEffect } from 'react';
+import { FC, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
 import { useAppSdk } from '../hooks/appSdk';
@@ -30,14 +30,17 @@ export const useNativeBackButton = (sdk: IAppSdk, onClick: () => void) => {
     }, [sdk, onClick]);
 };
 
-export const BackButtonBlock: FC<{ onClick: () => void }> = ({ onClick }) => {
+export const BackButtonBlock: FC<{ onClick: () => void; className?: string }> = ({
+    onClick,
+    className
+}) => {
     const sdk = useAppSdk();
     useNativeBackButton(sdk, onClick);
     if (sdk.nativeBackButton) {
         return <></>;
     } else {
         return (
-            <BackBlock>
+            <BackBlock className={className}>
                 <RoundedButton onClick={onClick}>
                     <ChevronLeftIcon />
                 </RoundedButton>
@@ -84,7 +87,7 @@ export const LogoutButton = () => {
         return (
             <LogoutBlock>
                 <LogoutButtonBlock onClick={back}>
-                    <Label2>{t('settings_reset')}</Label2>
+                    <Label2>{t('info_about_inactive_back')}</Label2>
                 </LogoutButtonBlock>
             </LogoutBlock>
         );

@@ -1,12 +1,14 @@
 import { Outlet, Route, Routes } from 'react-router-dom';
 import { WalletSettingsRoute } from '../../libs/routes';
 import { ActiveRecovery, Recovery } from '../../pages/settings/Recovery';
-import { WalletVersion } from '../../pages/settings/Version';
+import { WalletVersionPage } from '../../pages/settings/Version';
 import { JettonsSettings } from '../../pages/settings/Jettons';
 import styled from 'styled-components';
 import { DesktopWalletSettingsPage } from './DesktopWalletSettingsPage';
 import { DesktopConnectedAppsSettings } from './DesktopConnectedAppsSettings';
 import { DesktopNftSettings } from './DesktopNftSettings';
+import { MAMIndexesPage } from '../../pages/settings/MamIndexes';
+import { LedgerIndexesPage } from '../../pages/settings/LedgerIndexes';
 
 const OldSettingsLayoutWrapper = styled.div`
     padding-top: 64px;
@@ -26,10 +28,9 @@ export const DesktopWalletSettingsRouting = () => {
         <Routes>
             <Route element={<OldSettingsLayout />}>
                 <Route path={WalletSettingsRoute.recovery}>
-                    <Route path=":publicKey" element={<Recovery />} />
+                    <Route path=":accountId" element={<Recovery />} />
                     <Route index element={<ActiveRecovery />} />
                 </Route>
-                <Route path={WalletSettingsRoute.version} element={<WalletVersion />} />
                 <Route path={WalletSettingsRoute.jettons} element={<JettonsSettings />} />
             </Route>
             <Route
@@ -37,6 +38,9 @@ export const DesktopWalletSettingsRouting = () => {
                 element={<DesktopConnectedAppsSettings />}
             />
             <Route path={WalletSettingsRoute.nft} element={<DesktopNftSettings />} />
+            <Route path={WalletSettingsRoute.derivations} element={<MAMIndexesPage />} />
+            <Route path={WalletSettingsRoute.version} element={<WalletVersionPage />} />
+            <Route path={WalletSettingsRoute.ledgerIndexes} element={<LedgerIndexesPage />} />
             <Route path="*" element={<DesktopWalletSettingsPage />} />
         </Routes>
     );

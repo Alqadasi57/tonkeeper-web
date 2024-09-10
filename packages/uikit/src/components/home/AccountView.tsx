@@ -5,7 +5,7 @@ import { FC, useRef, useState } from 'react';
 import { QRCode } from 'react-qrcode-logo';
 import { CSSTransition, TransitionGroup } from 'react-transition-group';
 import styled, { css } from 'styled-components';
-import { useAppContext, useWalletContext } from '../../hooks/appContext';
+import { useAppContext } from '../../hooks/appContext';
 import { useAppSdk } from '../../hooks/appSdk';
 import { useTranslation } from '../../hooks/translation';
 import { useTronWalletState } from '../../state/tron/tron';
@@ -21,6 +21,12 @@ import { Body1, H3 } from '../Text';
 import { Button } from '../fields/Button';
 import { Wrapper, childFactoryCreator, duration } from '../transfer/common';
 import { QrWrapper } from './qrCodeView';
+import {
+    useActiveTonNetwork,
+    useActiveWallet,
+    useIsActiveWalletWatchOnly
+} from '../../state/wallet';
+import { AccountBadge } from '../account/AccountBadge';
 
 const CopyBlock = styled.div`
     display: flex;
@@ -97,10 +103,15 @@ const Description = styled(Body1)`
     color: ${props => props.theme.textSecondary};
 `;
 
-const values = [
+const WatchOnlyBadge = styled(AccountBadge)`
+    width: fit-content;
+    margin: 0 auto 10px;
+`;
+
+/*const values = [
     { name: BLOCKCHAIN_NAME.TON, id: BLOCKCHAIN_NAME.TON },
     { name: 'TRC20', id: BLOCKCHAIN_NAME.TRON }
-];
+];*/
 
 export const HeaderBlock: FC<{ title?: string; description: string }> = ({
     title,
@@ -138,10 +149,12 @@ const CopyButton: FC<{ address: string }> = ({ address }) => {
 const ReceiveTon: FC<{ jetton?: string }> = ({ jetton }) => {
     const sdk = useAppSdk();
     const { extension } = useAppContext();
-    const wallet = useWalletContext();
+    const wallet = useActiveWallet();
+    const isWatchOnly = useIsActiveWalletWatchOnly();
     const { t } = useTranslation();
+    const network = useActiveTonNetwork();
 
-    const address = formatAddress(wallet.active.rawAddress, wallet.network);
+    const address = formatAddress(wallet.rawAddress, network);
     return (
         <NotificationBlock>
             <HeaderBlock title={t('receive_ton')} description={t('receive_ton_description')} />
@@ -152,6 +165,7 @@ const ReceiveTon: FC<{ jetton?: string }> = ({ jetton }) => {
                     sdk.copyToClipboard(address, t('address_copied'));
                 }}
             >
+                {isWatchOnly && <WatchOnlyBadge accountType="watch-only" />}
                 <QrWrapper>
                     <QRCode
                         size={400}
@@ -216,7 +230,7 @@ export const ReceiveContent: FC<{
     handleClose?: () => void;
 }> = ({ chain = BLOCKCHAIN_NAME.TON, jetton, handleClose }) => {
     const { standalone } = useAppContext();
-    const [active, setActive] = useState(chain);
+    const [active] = useState(chain);
     const { data: tron } = useTronWalletState(active === BLOCKCHAIN_NAME.TRON);
     const tonRef = useRef<HTMLDivElement>(null);
     const tronRef = useRef<HTMLDivElement>(null);

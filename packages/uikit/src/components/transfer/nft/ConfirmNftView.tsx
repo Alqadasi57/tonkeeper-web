@@ -4,8 +4,8 @@ import {
     sendNftTransfer
 } from '@tonkeeper/core/dist/service/transfer/nftService';
 import { NftItem } from '@tonkeeper/core/dist/tonApiV2';
-import React, { FC, useState } from 'react';
-import { useAppContext, useWalletContext } from '../../../hooks/appContext';
+import React, { FC, ReactNode, useState } from 'react';
+import { useAppContext } from '../../../hooks/appContext';
 import { useAppSdk } from '../../../hooks/appSdk';
 import { useTranslation } from '../../../hooks/translation';
 import { Gap } from '../../Layout';
@@ -22,7 +22,6 @@ import {
     TransferEstimationEvent
 } from '@tonkeeper/core/dist/entries/send';
 import { useTransactionAnalytics } from '../../../hooks/amplitude';
-import { TxConfirmationCustomError } from '../../../libs/errors/TxConfirmationCustomError';
 import { QueryKey } from '../../../libs/queryKey';
 import { getSigner } from '../../../state/mnemonic';
 import { useCheckTouchId } from '../../../state/password';
@@ -34,6 +33,12 @@ import {
     ConfirmViewDetailsRecipient
 } from '../ConfirmView';
 import { NftDetailsBlock } from './Common';
+import {
+    useActiveAccount,
+    useActiveStandardTonWallet,
+    useInvalidateActiveWalletQueries
+} from '../../../state/wallet';
+import { isAccountControllable } from '@tonkeeper/core/dist/entries/account';
 
 const assetAmount = new AssetAmount({
     asset: TON_ASSET,
@@ -44,7 +49,7 @@ const useNftTransferEstimation = (nftItem: NftItem, data?: TonRecipientData) => 
     const { t } = useTranslation();
     const sdk = useAppSdk();
     const { api } = useAppContext();
-    const wallet = useWalletContext();
+    const wallet = useActiveStandardTonWallet();
     const client = useQueryClient();
 
     return useQuery<TransferEstimation<TonAsset>, Error>(
@@ -74,29 +79,31 @@ const useSendNft = (
     const { t } = useTranslation();
     const sdk = useAppSdk();
     const { api } = useAppContext();
-    const wallet = useWalletContext();
+    const account = useActiveAccount();
     const client = useQueryClient();
     const track2 = useTransactionAnalytics();
     const { mutateAsync: checkTouchId } = useCheckTouchId();
+    const { mutateAsync: invalidateAccountQueries } = useInvalidateActiveWalletQueries();
 
     return useMutation<boolean, Error>(async () => {
+        if (!isAccountControllable(account)) {
+            console.error("Can't send a transfer using this account");
+            return false;
+        }
+
         if (!fee) return false;
 
-        const signer = await getSigner(sdk, wallet.publicKey, checkTouchId).catch(() => null);
-        if (signer?.type !== 'cell') {
-            throw new TxConfirmationCustomError(t('ledger_operation_not_supported'));
-        }
+        const signer = await getSigner(sdk, account.id, checkTouchId).catch(() => null);
         if (signer === null) return false;
 
         track2('send-nft');
         try {
-            await sendNftTransfer(api, wallet, recipient, nftItem, fee, signer);
+            await sendNftTransfer(api, account, recipient, nftItem, fee, signer);
         } catch (e) {
             await notifyError(client, sdk, t, e);
         }
 
-        await client.invalidateQueries([wallet.active.rawAddress]);
-        await client.invalidateQueries();
+        await invalidateAccountQueries();
         return true;
     });
 };
@@ -105,9 +112,9 @@ export const ConfirmNftView: FC<{
     recipient: TonRecipientData;
     nftItem: NftItem;
     onClose: () => void;
-    HeaderBlock: () => JSX.Element;
-    MainButton: () => JSX.Element;
-}> = ({ recipient, onClose, nftItem, HeaderBlock, MainButton }) => {
+    headerBlock: ReactNode;
+    mainButton: ReactNode;
+}> = ({ recipient, onClose, nftItem, headerBlock, mainButton }) => {
     const { standalone } = useAppContext();
     const [done, setDone] = useState(false);
     const { t } = useTranslation();
@@ -156,7 +163,7 @@ export const ConfirmNftView: FC<{
             }}
         >
             <FullHeightBlock onSubmit={onSubmit} standalone={standalone}>
-                <HeaderBlock />
+                {headerBlock}
                 <Info>
                     {image ? <Image src={image.url} /> : <ImageMock />}
                     <SendingTitle>{nftItem.dns ?? nftItem.metadata.name}</SendingTitle>
@@ -171,7 +178,7 @@ export const ConfirmNftView: FC<{
                 <NftDetailsBlock nftItem={nftItem} />
 
                 <Gap />
-                <MainButton />
+                {mainButton}
             </FullHeightBlock>
         </ConfirmViewContext.Provider>
     );

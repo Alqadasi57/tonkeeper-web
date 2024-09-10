@@ -11,7 +11,6 @@ export enum AppRoute {
     signer = '/signer',
     publish = '/publish',
     swap = '/swap',
-    notcoin = '/notcoin',
     home = '/'
 }
 
@@ -29,7 +28,9 @@ export enum ImportRoute {
     create = '/create',
     signer = '/signer',
     ledger = '/ledger',
-    keystone = '/keystone'
+    keystone = '/keystone',
+    readOnly = '/watch-only',
+    mam = '/mam'
 }
 
 export enum SettingsRoute {
@@ -43,6 +44,7 @@ export enum SettingsRoute {
     account = '/account',
     recovery = '/recovery',
     version = '/version',
+    ledgerIndexes = '/ledger-indexes',
     jettons = '/jettons',
     nft = '/nft',
     security = '/security',
@@ -54,10 +56,13 @@ export enum SettingsRoute {
 export enum WalletSettingsRoute {
     index = '/',
     recovery = '/recovery',
+    recoveryMamWallet = '/recovery-mam-wallet',
     version = '/version',
+    ledgerIndexes = '/ledger-indexes',
     jettons = '/jettons',
     nft = '/nft',
-    connectedApps = '/connected-apps'
+    connectedApps = '/connected-apps',
+    derivations = '/derivations'
 }
 
 export enum BrowserRoute {

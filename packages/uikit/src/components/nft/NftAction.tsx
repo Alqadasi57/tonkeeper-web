@@ -3,9 +3,9 @@ import { NFT, isNFTDNS } from '@tonkeeper/core/dist/entries/nft';
 import { NftItem } from '@tonkeeper/core/dist/tonApiV2';
 import { FC } from 'react';
 import styled from 'styled-components';
-import { useWalletContext } from '../../hooks/appContext';
 import { useAppSdk } from '../../hooks/appSdk';
 import { useTranslation } from '../../hooks/translation';
+import { useActiveWallet, useIsActiveWalletWatchOnly } from '../../state/wallet';
 import { Body2 } from '../Text';
 import { Button } from '../fields/Button';
 import { LinkNft } from './LinkNft';
@@ -48,7 +48,7 @@ const ActionTransfer: FC<{
 }> = ({ nftItem }) => {
     const sdk = useAppSdk();
     const { t } = useTranslation();
-    const wallet = useWalletContext();
+    const wallet = useActiveWallet();
 
     return (
         <>
@@ -57,8 +57,7 @@ const ActionTransfer: FC<{
                 size="large"
                 fullWidth
                 disabled={
-                    nftItem.sale !== undefined ||
-                    nftItem.owner?.address !== wallet.active.rawAddress
+                    nftItem.sale !== undefined || nftItem.owner?.address !== wallet.rawAddress
                 }
                 onClick={e => {
                     e.preventDefault();
@@ -90,6 +89,15 @@ export const NftAction: FC<{
     kind: NFTKind;
     nftItem: NFT;
 }> = ({ kind, nftItem }) => {
+    const isReadOnly = useIsActiveWalletWatchOnly();
+    if (isReadOnly) {
+        return (
+            <>
+                <ViewOnMarketButton url={getMarketplaceUrl(nftItem)} />
+            </>
+        );
+    }
+
     switch (kind) {
         case 'token': {
             return (

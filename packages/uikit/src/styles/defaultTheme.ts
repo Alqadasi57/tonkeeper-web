@@ -51,6 +51,7 @@ export const defaultTheme: DefaultTheme = {
     fieldErrorBackground: 'rgba(255, 71, 102, 0.08)',
 
     accentBlue: '#45AEF5',
+    accentBlueConstant: '#45AEF5',
     accentGreen: '#39CC83',
     accentRed: '#FF4766',
     accentOrange: '#F5A73B',
@@ -88,5 +89,6 @@ export const defaultTheme: DefaultTheme = {
     cornerLarge: '24px',
     cornerFull: '100%',
     fontMono: 'ui-monospace, SF Mono, monospace, Roboto Mono, Menlo, Consolas, Courier',
-    displayType: 'compact'
+    displayType: 'compact',
+    os: undefined
 };

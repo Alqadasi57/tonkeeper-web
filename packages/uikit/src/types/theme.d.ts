@@ -52,6 +52,7 @@ declare module 'styled-components' {
         fieldErrorBackground: string;
 
         accentBlue: string;
+        accentBlueConstant: string;
         accentGreen: string;
         accentRed: string;
         accentOrange: string;
@@ -88,5 +89,6 @@ declare module 'styled-components' {
          * 'compact' is default mode and 'full-width' is for desktop 'pro' mode
          */
         displayType: 'compact' | 'full-width';
+        os: 'mac' | 'windows' | 'linux' | 'android' | 'ios' | undefined;
     }
 }

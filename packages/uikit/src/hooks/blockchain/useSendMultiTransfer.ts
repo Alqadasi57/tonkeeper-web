@@ -15,9 +15,11 @@ import { useJettonList } from '../../state/jetton';
 import { getSigner } from '../../state/mnemonic';
 import { useCheckTouchId } from '../../state/password';
 import { useTransactionAnalytics } from '../amplitude';
-import { useAppContext, useWalletContext } from '../appContext';
+import { useAppContext } from '../appContext';
 import { useAppSdk } from '../appSdk';
 import { useTranslation } from '../translation';
+import { useActiveAccount } from '../../state/wallet';
+import { isAccountControllable } from '@tonkeeper/core/dist/entries/account';
 
 export type MultiSendFormTokenized = {
     rows: {
@@ -42,7 +44,7 @@ export function useSendMultiTransfer() {
     const { t } = useTranslation();
     const sdk = useAppSdk();
     const { api } = useAppContext();
-    const wallet = useWalletContext();
+    const account = useActiveAccount();
     const client = useQueryClient();
     const track2 = useTransactionAnalytics();
     const { data: jettons } = useJettonList();
@@ -53,9 +55,16 @@ export function useSendMultiTransfer() {
         Error,
         { form: MultiSendFormTokenized; asset: TonAsset; feeEstimation: BigNumber }
     >(async ({ form, asset, feeEstimation }) => {
-        const signer = await getSigner(sdk, wallet.publicKey, checkTouchId).catch(() => null);
+        const signer = await getSigner(sdk, account.id, checkTouchId).catch(() => null);
+        const walletId = account.activeTonWallet.id;
         if (signer === null) return false;
         try {
+            if (!isAccountControllable(account)) {
+                throw new Error("Can't send a transfer using this account");
+            }
+
+            const wallet = account.activeTonWallet;
+
             if (signer.type !== 'cell') {
                 throw new TxConfirmationCustomError(t('ledger_operation_not_supported'));
             }
@@ -88,7 +97,7 @@ export function useSendMultiTransfer() {
         }
 
         await client.invalidateQueries({
-            predicate: query => query.queryKey.includes(wallet.active.rawAddress)
+            predicate: query => query.queryKey.includes(walletId)
         });
         return true;
     });

@@ -1,33 +1,36 @@
-import { WalletState } from '../../entries/wallet';
-import { TonRecipientData } from '../../entries/send';
-import BigNumber from 'bignumber.js';
-import {
-    externalMessage,
-    getTonkeeperQueryId,
-    getTTL,
-    seeIfTransferBounceable,
-    SendMode
-} from '../transfer/common';
 import { Address, Cell } from '@ton/core';
-import { getLedgerAccountPathByIndex } from './utils';
-import { AuthLedger } from '../../entries/password';
-import { walletContractFromState } from '../wallet/contractService';
+import BigNumber from 'bignumber.js';
+import { AccountLedger } from '../../entries/account';
+import { APIConfig } from '../../entries/apis';
 import { AssetAmount } from '../../entries/crypto/asset/asset-amount';
 import { TonAsset } from '../../entries/crypto/asset/ton-asset';
+import { TonRecipientData } from '../../entries/send';
+import { LedgerSigner } from '../../entries/signer';
+import {
+    SendMode,
+    externalMessage,
+    getServerTime,
+    getTTL,
+    getTonkeeperQueryId,
+    seeIfTransferBounceable
+} from '../transfer/common';
+import { getJettonCustomPayload } from '../transfer/jettonPayloadService';
 import { jettonTransferAmount, jettonTransferForwardAmount } from '../transfer/jettonService';
 import { nftTransferForwardAmount } from '../transfer/nftService';
-import { LedgerSigner } from '../../entries/signer';
+import { walletContractFromState } from '../wallet/contractService';
+import { getLedgerAccountPathByIndex } from './utils';
 
 export const createLedgerTonTransfer = async (
     timestamp: number,
     seqno: number,
-    walletState: WalletState,
+    account: AccountLedger,
     recipient: TonRecipientData,
     weiAmount: BigNumber,
     isMax: boolean,
     signer: LedgerSigner
 ) => {
-    const path = getLedgerAccountPathByIndex((walletState.auth as AuthLedger).accountIndex);
+    const path = getLedgerAccountPathByIndex(account.activeDerivationIndex);
+    const walletState = account.activeTonWallet;
     const contract = walletContractFromState(walletState);
 
     const transfer = await signer(path, {
@@ -46,18 +49,28 @@ export const createLedgerTonTransfer = async (
 };
 
 export const createLedgerJettonTransfer = async (
-    timestamp: number,
+    api: APIConfig,
     seqno: number,
-    walletState: WalletState,
+    account: AccountLedger,
     recipientAddress: string,
     amount: AssetAmount<TonAsset>,
     jettonWalletAddress: string,
     forwardPayload: Cell | null,
     signer: LedgerSigner
 ) => {
+    const timestamp = await getServerTime(api);
+
     const jettonAmount = BigInt(amount.stringWeiAmount);
-    const path = getLedgerAccountPathByIndex((walletState.auth as AuthLedger).accountIndex);
-    const contract = walletContractFromState(walletState);
+    const path = getLedgerAccountPathByIndex(account.activeDerivationIndex);
+    const wallet = account.activeTonWallet;
+
+    const { customPayload, stateInit } = await getJettonCustomPayload(
+        api,
+        wallet.rawAddress,
+        amount
+    );
+
+    const contract = walletContractFromState(wallet);
 
     const transfer = await signer(path, {
         to: Address.parse(jettonWalletAddress),
@@ -67,15 +80,17 @@ export const createLedgerJettonTransfer = async (
         timeout: getTTL(timestamp),
         sendMode: SendMode.PAY_GAS_SEPARATELY + SendMode.IGNORE_ERRORS,
         payload: {
+            knownJetton: null,
             type: 'jetton-transfer',
             queryId: getTonkeeperQueryId(),
             amount: jettonAmount,
             destination: Address.parse(recipientAddress),
-            responseDestination: Address.parse(walletState.active.rawAddress),
+            responseDestination: Address.parse(wallet.rawAddress),
             forwardAmount: jettonTransferForwardAmount,
             forwardPayload,
-            customPayload: null
-        }
+            customPayload
+        },
+        stateInit
     });
 
     return externalMessage(contract, seqno, transfer).toBoc();
@@ -84,14 +99,15 @@ export const createLedgerJettonTransfer = async (
 export const createLedgerNftTransfer = async (
     timestamp: number,
     seqno: number,
-    walletState: WalletState,
+    account: AccountLedger,
     recipientAddress: string,
     nftAddress: string,
     nftTransferAmount: bigint,
     forwardPayload: Cell | null,
     signer: LedgerSigner
 ) => {
-    const path = getLedgerAccountPathByIndex((walletState.auth as AuthLedger).accountIndex);
+    const path = getLedgerAccountPathByIndex(account.activeDerivationIndex);
+    const walletState = account.activeTonWallet;
     const contract = walletContractFromState(walletState);
 
     const transfer = await signer(path, {
@@ -105,7 +121,7 @@ export const createLedgerNftTransfer = async (
             type: 'nft-transfer',
             queryId: getTonkeeperQueryId(),
             newOwner: Address.parse(recipientAddress),
-            responseDestination: Address.parse(walletState.active.rawAddress),
+            responseDestination: Address.parse(walletState.rawAddress),
             forwardAmount: nftTransferForwardAmount,
             forwardPayload,
             customPayload: null

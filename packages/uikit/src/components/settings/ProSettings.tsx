@@ -1,28 +1,30 @@
 import { CryptoCurrency } from '@tonkeeper/core/dist/entries/crypto';
-import { isPaidSubscription, ProState } from '@tonkeeper/core/dist/entries/pro';
+import { isPaidSubscription, ProState, ProStateAuthorized } from '@tonkeeper/core/dist/entries/pro';
 import { formatAddress, toShortValue } from '@tonkeeper/core/dist/utils/common';
 import { ProServiceTier } from '@tonkeeper/core/src/tonConsoleApi';
 import { FC, PropsWithChildren, useCallback, useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
-import { WalletStateContext } from '../../hooks/appContext';
 import { useNotifyError } from '../../hooks/appSdk';
 import { useFormatCoinValue } from '../../hooks/balance';
 import { useEstimateTransfer } from '../../hooks/blockchain/useEstimateTransfer';
 import { useSendTransfer } from '../../hooks/blockchain/useSendTransfer';
 import { useTranslation } from '../../hooks/translation';
-import { useAccountState } from '../../state/account';
 import {
     ConfirmState,
     useCreateInvoiceMutation,
     useProLogout,
     useProPlans,
     useProState,
-    useSelectWalletMutation,
+    useSelectWalletForProMutation,
     useWaitInvoiceMutation
 } from '../../state/pro';
-import { useWalletState } from '../../state/wallet';
+import {
+    useControllableAccountAndWalletByWalletId,
+    useAccountsState,
+    useActiveTonNetwork
+} from '../../state/wallet';
 import { InnerBody } from '../Body';
-import { SubscriptionStatus } from '../desktop/aside/SubscriptionInfo';
+import { SubscriptionStatus } from '../desktop/aside/SubscriptionInfoBlock';
 import { Button } from '../fields/Button';
 import { Radio } from '../fields/Checkbox';
 import { Input } from '../fields/Input';
@@ -33,6 +35,14 @@ import { Notification } from '../Notification';
 import { SubHeader } from '../SubHeader';
 import { Body1, Label1, Title } from '../Text';
 import { ConfirmView } from '../transfer/ConfirmView';
+import {
+    backwardCompatibilityOnlyWalletVersions,
+    sortWalletsByVersion,
+    TonWalletStandard
+} from '@tonkeeper/core/dist/entries/wallet';
+import { AccountTonMnemonic, Account } from '@tonkeeper/core/dist/entries/account';
+import { WalletEmoji } from '../shared/emoji/WalletEmoji';
+import { WalletVersionBadge } from '../account/AccountBadge';
 
 const Block = styled.div`
     display: flex;
@@ -56,19 +66,35 @@ const Description = styled(Body1)`
     margin-bottom: 16px;
 `;
 
-const WalletItem: FC<{ publicKey: string }> = ({ publicKey }) => {
-    const { t } = useTranslation();
-    const { data: wallet } = useWalletState(publicKey);
+const WalletEmojiStyled = styled(WalletEmoji)`
+    margin-left: 3px;
+    display: inline-flex;
+`;
 
-    const address = wallet
-        ? toShortValue(formatAddress(wallet.active.rawAddress, wallet.network))
-        : undefined;
+const WalletBadgeStyled = styled(WalletVersionBadge)`
+    margin-left: 3px;
+    display: inline-block;
+`;
+
+const WalletItem: FC<{ account: Account; wallet: TonWalletStandard }> = ({ account, wallet }) => {
+    const network = useActiveTonNetwork();
+    const address = toShortValue(formatAddress(wallet.rawAddress, network));
 
     return (
         <ColumnText
             noWrap
-            text={wallet?.name ? wallet.name : `${t('wallet_title')}`}
-            secondary={address}
+            text={
+                <>
+                    {account.name}
+                    <WalletEmojiStyled emoji={account.emoji} />
+                </>
+            }
+            secondary={
+                <>
+                    {address}
+                    <WalletBadgeStyled walletVersion={wallet.version} />
+                </>
+            }
         />
     );
 };
@@ -80,26 +106,31 @@ const SelectLabel = styled(Label1)`
 
 const SelectWallet: FC<{ onClose: () => void }> = ({ onClose }) => {
     const { t } = useTranslation();
-    const { data: accounts } = useAccountState();
-    const { mutateAsync, error } = useSelectWalletMutation();
+    const { mutateAsync, error } = useSelectWalletForProMutation();
     useNotifyError(error);
-
-    if (!accounts) return <></>;
+    const accounts = useAccountsState().filter(
+        acc => acc.type === 'mnemonic' || acc.type === 'mam'
+    ) as AccountTonMnemonic[];
 
     return (
         <>
             <SelectLabel>{t('select_wallet_for_authorization')}</SelectLabel>
             <ListBlock>
-                {accounts.publicKeys.map(publicKey => (
-                    <ListItem
-                        key={publicKey}
-                        onClick={() => mutateAsync(publicKey).then(() => onClose())}
-                    >
-                        <ListItemPayload>
-                            <WalletItem publicKey={publicKey} />
-                        </ListItemPayload>
-                    </ListItem>
-                ))}
+                {accounts.flatMap(account =>
+                    account.allTonWallets
+                        .filter(w => !backwardCompatibilityOnlyWalletVersions.includes(w.version))
+                        .sort(sortWalletsByVersion)
+                        .map(wallet => (
+                            <ListItem
+                                key={wallet.id}
+                                onClick={() => mutateAsync(wallet.id).then(() => onClose())}
+                            >
+                                <ListItemPayload>
+                                    <WalletItem account={account} wallet={wallet} />
+                                </ListItemPayload>
+                            </ListItem>
+                        ))
+                )}
             </ListBlock>
         </>
     );
@@ -116,11 +147,19 @@ const ProWallet: FC<{
     onClick: () => void;
     disabled?: boolean;
 }> = ({ data, onClick, disabled }) => {
+    const { account, wallet } = useControllableAccountAndWalletByWalletId(
+        data.authorizedWallet?.rawAddress || undefined
+    );
+
+    if (!account || !wallet) {
+        return null;
+    }
+
     return (
         <ListBlock>
             <ListItem onClick={() => !disabled && onClick()}>
                 <ListItemPayload>
-                    <WalletItem publicKey={data.wallet.publicKey} />
+                    <WalletItem account={account} wallet={wallet} />
                     <SelectIconWrapper>
                         <DoneIcon />
                     </SelectIconWrapper>
@@ -179,19 +218,17 @@ const ConfirmNotification: FC<{
     const content = useCallback(() => {
         if (!state) return <></>;
         return (
-            <WalletStateContext.Provider value={state.wallet}>
-                <ConfirmBuyProService
-                    {...state}
-                    onClose={confirmed => {
-                        if (confirmed) {
-                            waitResult(state);
-                            setTimeout(() => onClose(true), 3000);
-                        } else {
-                            onClose();
-                        }
-                    }}
-                />
-            </WalletStateContext.Provider>
+            <ConfirmBuyProService
+                {...state}
+                onClose={confirmed => {
+                    if (confirmed) {
+                        waitResult(state);
+                        setTimeout(() => onClose(true), 3000);
+                    } else {
+                        onClose();
+                    }
+                }}
+            />
         );
     }, [state]);
 
@@ -217,11 +254,11 @@ const ConfirmBuyProService: FC<
     return <ConfirmView estimation={estimation} {...mutation} {...rest} />;
 };
 
-const BuyProService: FC<{ data: ProState; setReLogin: () => void; onSuccess?: () => void }> = ({
-    data,
-    setReLogin,
-    onSuccess
-}) => {
+const BuyProService: FC<{
+    data: ProStateAuthorized;
+    setReLogin: () => void;
+    onSuccess?: () => void;
+}> = ({ data, setReLogin, onSuccess }) => {
     const { t } = useTranslation();
 
     const ref = useRef<HTMLDivElement>(null);
@@ -329,7 +366,7 @@ const PreServiceStatus: FC<{ data: ProState; setReLogin: () => void }> = ({ data
 const ProContent: FC<{ data: ProState; onSuccess?: () => void }> = ({ data, onSuccess }) => {
     const [reLogin, setReLogin] = useState(false);
 
-    if (!data.hasWalletAuthCookie || reLogin) {
+    if (!data.authorizedWallet || reLogin) {
         return <SelectWallet onClose={() => setReLogin(false)} />;
     }
     if (isPaidSubscription(data.subscription)) {
@@ -353,7 +390,13 @@ export const ProSettingsContent: FC<{ showLogo?: boolean; onSuccess?: () => void
                 <Title>{t('tonkeeper_pro')}</Title>
                 <Description>{t('tonkeeper_pro_description')}</Description>
             </Block>
-            {data && <ProContent key={data.wallet.rawAddress} data={data} onSuccess={onSuccess} />}
+            {data && (
+                <ProContent
+                    key={data.authorizedWallet?.rawAddress}
+                    data={data}
+                    onSuccess={onSuccess}
+                />
+            )}
         </>
     );
 };

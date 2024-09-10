@@ -1,195 +1,712 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Address } from '@ton/core';
-import { CryptoCurrency } from '@tonkeeper/core/dist/entries/crypto';
-import { KNOWN_TON_ASSETS } from '@tonkeeper/core/dist/entries/crypto/asset/constants';
-import { FiatCurrencies } from '@tonkeeper/core/dist/entries/fiat';
-import { NFT } from '@tonkeeper/core/dist/entries/nft';
-import { AuthState } from '@tonkeeper/core/dist/entries/password';
-import { ActiveWalletConfig, WalletState } from '@tonkeeper/core/dist/entries/wallet';
-import { accountLogOutWallet, getAccountState } from '@tonkeeper/core/dist/service/accountService';
+import { mnemonicValidate } from '@ton/crypto';
+import {
+    Account,
+    AccountId,
+    AccountTonMnemonic,
+    AccountTonWatchOnly,
+    AccountsState,
+    getAccountByWalletById,
+    getWalletById,
+    isAccountVersionEditable,
+    isAccountControllable,
+    AccountMAM
+} from '@tonkeeper/core/dist/entries/account';
+import { Network } from '@tonkeeper/core/dist/entries/network';
+import { AuthKeychain } from '@tonkeeper/core/dist/entries/password';
+import {
+    TonWalletConfig,
+    TonWalletStandard,
+    WalletId,
+    WalletVersion,
+    WalletVersions,
+    isStandardTonWallet
+} from '@tonkeeper/core/dist/entries/wallet';
+import { encrypt } from '@tonkeeper/core/dist/service/cryptoService';
 import {
     getActiveWalletConfig,
     setActiveWalletConfig
 } from '@tonkeeper/core/dist/service/wallet/configService';
-import { getWalletState } from '@tonkeeper/core/dist/service/wallet/storeService';
 import {
-    getWalletAuthState,
-    updateWalletProperty
+    createMAMAccountByMnemonic,
+    createReadOnlyTonAccountByAddress,
+    createStandardTonAccountByMnemonic,
+    getWalletAddress
 } from '@tonkeeper/core/dist/service/walletService';
-import {
-    Account,
-    AccountsApi,
-    BlockchainApi,
-    DNSApi,
-    DnsRecord,
-    JettonBalance,
-    NFTApi,
-    NftCollection,
-    NftItem,
-    WalletApi
-} from '@tonkeeper/core/dist/tonApiV2';
-import { shiftedDecimals } from '@tonkeeper/core/dist/utils/balance';
-import { isTONDNSDomain } from '@tonkeeper/core/dist/utils/nft';
-import BigNumber from 'bignumber.js';
+import { AccountsApi, Account as TonapiAccount } from '@tonkeeper/core/dist/tonApiV2';
+import { seeIfValidTonAddress } from '@tonkeeper/core/dist/utils/common';
 import { useMemo } from 'react';
-import { useAppContext, useWalletContext } from '../hooks/appContext';
+import { useAppContext } from '../hooks/appContext';
 import { useAppSdk } from '../hooks/appSdk';
-import { useStorage } from '../hooks/storage';
-import { QueryKey } from '../libs/queryKey';
-import { useAssets } from './home';
-import { isSpamNft } from './nft';
-import {
-    getJettonsFiatAmount,
-    tokenRate as getTokenRate,
-    getTonFiatAmount,
-    useRate
-} from './rates';
-import { DefaultRefetchInterval } from './tonendpoint';
+import { useAccountsStorage } from '../hooks/useStorage';
+import { QueryKey, anyOfKeysParts } from '../libs/queryKey';
+import { useDevSettings } from './dev';
+import { getAccountMnemonic, getPasswordByNotification } from './mnemonic';
+import { useCheckTouchId } from './password';
+import { TonKeychainRoot } from '@ton-keychain/core';
+import { walletContract } from '@tonkeeper/core/dist/service/wallet/contractService';
 
-export const useActiveWallet = () => {
-    const sdk = useAppSdk();
-    return useQuery<WalletState | null, Error>([QueryKey.account, QueryKey.wallet], async () => {
-        const account = await getAccountState(sdk.storage);
-        if (!account.activePublicKey) return null;
-        return getWalletState(sdk.storage, account.activePublicKey);
-    });
-};
-
-export const useWalletState = (publicKey: string) => {
-    const sdk = useAppSdk();
-    return useQuery<WalletState | null, Error>([QueryKey.account, QueryKey.wallet, publicKey], () =>
-        getWalletState(sdk.storage, publicKey)
-    );
-};
-
-export const useWalletAuthState = (publicKey: string) => {
-    const sdk = useAppSdk();
-    return useQuery<AuthState, Error>([QueryKey.account, QueryKey.password, publicKey], () =>
-        getWalletAuthState(sdk.storage, publicKey)
-    );
-};
-
-export const useWalletsState = () => {
-    const { account } = useAppContext();
-    const sdk = useAppSdk();
-    return useQuery<(WalletState | null)[], Error>(
-        [QueryKey.account, QueryKey.wallets, account.publicKeys],
-        () => Promise.all(account.publicKeys.map(key => getWalletState(sdk.storage, key)))
-    );
-};
-
-export const useMutateLogOut = (publicKey: string, remove = false) => {
-    const sdk = useAppSdk();
-    const client = useQueryClient();
-    return useMutation<void, Error, void>(async () => {
-        await accountLogOutWallet(sdk.storage, publicKey, remove);
-        await client.invalidateQueries([QueryKey.account]);
-    });
-};
-
-export const useMutateRenameWallet = (wallet: WalletState) => {
-    const sdk = useAppSdk();
-    const client = useQueryClient();
-
-    return useMutation<void, Error, { name?: string; emoji?: string }>(async form => {
-        if (form.name !== undefined && form.name.length <= 0) {
-            throw new Error('Missing name');
-        }
-
-        const formToUpdate = {
-            ...(form.emoji && { emoji: form.emoji }),
-            ...(form.name && { name: form.name })
-        };
-
-        await updateWalletProperty(sdk.storage, wallet, formToUpdate);
-        await client.invalidateQueries([QueryKey.account]);
-    });
-};
-
-export const useMutateWalletProperty = (clearWallet = false) => {
-    const storage = useStorage();
-    const wallet = useWalletContext();
-    const client = useQueryClient();
-
-    return useMutation<
-        void,
-        Error,
-        Partial<
-            Pick<
-                WalletState,
-                'name' | 'hiddenJettons' | 'orderJettons' | 'lang' | 'network' | 'emoji'
-            >
-        >
-    >(async props => {
-        await updateWalletProperty(storage, wallet, props);
-        await client.invalidateQueries([QueryKey.account]);
-        if (clearWallet) {
-            await client.invalidateQueries([wallet.publicKey]);
-        }
-    });
-};
-
-export const useWalletAddresses = () => {
-    const wallet = useWalletContext();
-    const {
-        api: { tonApiV2 }
-    } = useAppContext();
-    return useQuery<string[], Error>([wallet.publicKey, QueryKey.addresses], async () => {
-        const { accounts } = await new WalletApi(tonApiV2).getWalletsByPublicKey({
-            publicKey: wallet.publicKey
-        });
-        const result = accounts
-            .filter(item => item.balance > 0 || item.status === 'active')
-            .map(w => w.address);
-
-        if (result.length > 0) {
-            return result;
-        } else {
-            return [wallet.active.rawAddress];
-        }
-    });
-};
-
-export const useWalletAccountInfo = () => {
-    const wallet = useWalletContext();
-    const { api } = useAppContext();
-    return useQuery<Account, Error>(
-        [wallet.active.rawAddress, QueryKey.info],
-        async () => {
-            return new AccountsApi(api.tonApiV2).getAccount({
-                accountId: wallet.active.rawAddress
-            });
+export const useActiveAccountQuery = () => {
+    const storage = useAccountsStorage();
+    return useQuery<Account | null, Error>(
+        [QueryKey.account, QueryKey.wallet],
+        () => {
+            return storage.getActiveAccount();
         },
         {
-            refetchInterval: DefaultRefetchInterval,
-            refetchIntervalInBackground: true,
-            refetchOnWindowFocus: true,
             keepPreviousData: true
         }
     );
 };
 
-export const useActiveWalletConfig = () => {
-    const wallet = useWalletContext();
-    const sdk = useAppSdk();
-    return useQuery<ActiveWalletConfig, Error>(
-        [wallet.active.rawAddress, wallet.network, QueryKey.walletConfig],
-        async () => getActiveWalletConfig(sdk.storage, wallet.active.rawAddress, wallet.network)
+export const useActiveAccount = () => {
+    const { data } = useActiveAccountQuery();
+    if (!data) {
+        throw new Error('No active account');
+    }
+
+    return data;
+};
+
+export const useActiveWallet = () => {
+    const account = useActiveAccount();
+    return account.activeTonWallet;
+};
+
+export const useActiveStandardTonWallet = () => {
+    const wallet = useActiveWallet();
+    if (!isStandardTonWallet(wallet)) {
+        throw new Error('Wallet is not standard');
+    }
+    return wallet;
+};
+
+export const useMutateActiveAccount = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, AccountId>(async accountId => {
+        await storage.setActiveAccountId(accountId);
+        await client.invalidateQueries(anyOfKeysParts(QueryKey.account, accountId));
+    });
+};
+
+export const useMutateActiveAccountAndWallet = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, { accountId: AccountId; walletId: WalletId }>(
+        async ({ accountId, walletId }) => {
+            const account = await storage.getAccount(accountId);
+
+            if (!account) {
+                throw new Error('Account not found');
+            }
+            account.setActiveTonWallet(walletId);
+            await storage.updateAccountInState(account);
+            await storage.setActiveAccountId(account.id);
+            await client.invalidateQueries(anyOfKeysParts(QueryKey.account, accountId, walletId));
+        }
     );
 };
 
-export const useMutateActiveWalletConfig = () => {
-    const wallet = useWalletContext();
+export const useMutateActiveTonWallet = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, WalletId>(async walletId => {
+        const accounts = await storage.getAccounts();
+        const account = getAccountByWalletById(accounts, walletId);
+
+        if (!account) {
+            throw new Error('Account not found');
+        }
+        account.setActiveTonWallet(walletId);
+        await storage.updateAccountInState(account);
+        await storage.setActiveAccountId(account.id);
+        await client.invalidateQueries(anyOfKeysParts(QueryKey.account, walletId));
+    });
+};
+
+export const useMutateAccountActiveDerivation = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, { derivationIndex: number; accountId: AccountId }>(
+        async ({ accountId, derivationIndex }) => {
+            const account = await storage.getAccount(accountId);
+
+            if (!account || (account.type !== 'ledger' && account.type !== 'mam')) {
+                throw new Error('Account not found');
+            }
+
+            account.setActiveDerivationIndex(derivationIndex);
+            const walletId = account.activeTonWallet.id;
+            await storage.updateAccountInState(account);
+            await storage.setActiveAccountId(account.id);
+            await client.invalidateQueries(anyOfKeysParts(QueryKey.account, walletId));
+        }
+    );
+};
+
+export const useAddLedgerAccountDerivation = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, { derivationIndex: number; accountId: AccountId }>(
+        async ({ accountId, derivationIndex }) => {
+            const account = await storage.getAccount(accountId);
+
+            if (!account || account.type !== 'ledger') {
+                throw new Error('Account not found');
+            }
+
+            account.setAddedDerivationsIndexes(
+                account.addedDerivationsIndexes
+                    .filter(i => i !== derivationIndex)
+                    .concat(derivationIndex)
+            );
+            await storage.updateAccountInState(account);
+            await client.invalidateQueries(anyOfKeysParts(QueryKey.account));
+        }
+    );
+};
+
+export const useRemoveLedgerAccountDerivation = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, { derivationIndex: number; accountId: AccountId }>(
+        async ({ accountId, derivationIndex }) => {
+            const account = await storage.getAccount(accountId);
+
+            if (!account || account.type !== 'ledger') {
+                throw new Error('Account not found');
+            }
+
+            account.setAddedDerivationsIndexes(
+                account.addedDerivationsIndexes.filter(i => i !== derivationIndex)
+            );
+            await storage.updateAccountInState(account);
+            await client.invalidateQueries(anyOfKeysParts(QueryKey.account));
+        }
+    );
+};
+
+export const useCreateMAMAccountDerivation = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    const sdk = useAppSdk();
+    const appContext = useAppContext();
+    const network = useActiveTonNetwork();
+    const { mutateAsync: checkTouchId } = useCheckTouchId();
+
+    return useMutation<void, Error, { accountId: AccountId }>(async ({ accountId }) => {
+        const account = await storage.getAccount(accountId);
+        if (!account || account.type !== 'mam') {
+            throw new Error('Account not found');
+        }
+        const newDerivationIndex = account.lastAddedIndex + 1;
+
+        const mnemonic = await getAccountMnemonic(sdk, accountId, checkTouchId);
+
+        const root = await TonKeychainRoot.fromMnemonic(mnemonic);
+        const tonAccount = await root.getTonAccount(newDerivationIndex);
+
+        const tonWallet = walletContract(
+            tonAccount.publicKey,
+            appContext.defaultWalletVersion,
+            network
+        );
+        const tonWallets: TonWalletStandard[] = [
+            {
+                id: tonWallet.address.toRawString(),
+                publicKey: tonAccount.publicKey,
+                version: appContext.defaultWalletVersion,
+                rawAddress: tonWallet.address.toRawString()
+            }
+        ];
+
+        account.addDerivation({
+            name: account.getNewDerivationFallbackName(),
+            emoji: account.emoji,
+            index: newDerivationIndex,
+            tonWallets,
+            activeTonWalletId: tonWallets[0].id
+        });
+
+        await storage.updateAccountInState(account);
+        await client.invalidateQueries(anyOfKeysParts(QueryKey.account, account.id));
+    });
+};
+
+export const useHideMAMAccountDerivation = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, { derivationIndex: number; accountId: AccountId }>(
+        async ({ accountId, derivationIndex }) => {
+            const account = await storage.getAccount(accountId);
+
+            if (!account || account.type !== 'mam') {
+                throw new Error('Account not found');
+            }
+
+            account.hideDerivation(derivationIndex);
+            await storage.updateAccountInState(account);
+            await client.invalidateQueries(anyOfKeysParts(QueryKey.account, account.id));
+        }
+    );
+};
+
+export const useEnableMAMAccountDerivation = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, { derivationIndex: number; accountId: AccountId }>(
+        async ({ accountId, derivationIndex }) => {
+            const account = await storage.getAccount(accountId);
+
+            if (!account || account.type !== 'mam') {
+                throw new Error('Account not found');
+            }
+
+            account.enableDerivation(derivationIndex);
+            await storage.updateAccountInState(account);
+            await client.invalidateQueries(anyOfKeysParts(QueryKey.account, account.id));
+        }
+    );
+};
+
+export const useAccountState = (id: AccountId | undefined) => {
+    const accounts = useAccountsState();
+    return useMemo(
+        () => (id !== undefined ? (accounts || []).find(w => w.id === id) : undefined),
+        [accounts, id]
+    );
+};
+
+export const useControllableAccountAndWalletByWalletId = (
+    id: WalletId | undefined
+): { account: Account | undefined; wallet: TonWalletStandard | undefined } => {
+    const accounts = useAccountsState().filter(isAccountControllable);
+    return useMemo(() => {
+        if (!id) {
+            return {
+                wallet: undefined,
+                account: undefined
+            };
+        }
+        return {
+            wallet: getWalletById(accounts, id),
+            account: getAccountByWalletById(accounts, id)
+        };
+    }, [accounts, id]);
+};
+
+export const useAccountsStateQuery = () => {
+    const storage = useAccountsStorage();
+    return useQuery<AccountsState, Error>(
+        [QueryKey.account, QueryKey.wallets],
+        () => storage.getAccounts(),
+        {
+            keepPreviousData: true
+        }
+    );
+};
+
+export const useMutateAccountsState = () => {
+    const client = useQueryClient();
+    const storage = useAccountsStorage();
+    return useMutation<void, Error, AccountsState>(async state => {
+        await storage.setAccounts(state);
+        await client.invalidateQueries([QueryKey.account]);
+    });
+};
+
+export const useCreateAccountReadOnly = () => {
+    const sdk = useAppSdk();
+    const { mutateAsync: addAccountToState } = useAddAccountToStateMutation();
+    const { mutateAsync: selectAccountMutation } = useMutateActiveAccount();
+
+    return useMutation<
+        AccountTonWatchOnly,
+        Error,
+        {
+            address: string;
+            name?: string;
+        }
+    >(async ({ address, name }) => {
+        const valid = await seeIfValidTonAddress(address);
+        if (!valid) {
+            throw new Error('Address is not valid.');
+        }
+
+        const account = await createReadOnlyTonAccountByAddress(sdk.storage, address, { name });
+
+        await addAccountToState(account);
+        await selectAccountMutation(account.id);
+        return account;
+    });
+};
+export const useCreateAccountMnemonic = () => {
+    const sdk = useAppSdk();
+    const context = useAppContext();
+    const { mutateAsync: addAccountToState } = useAddAccountToStateMutation();
+    const { mutateAsync: selectAccountMutation } = useMutateActiveAccount();
+
+    return useMutation<
+        AccountTonMnemonic,
+        Error,
+        {
+            mnemonic: string[];
+            password?: string;
+            versions: WalletVersion[];
+            selectAccount?: boolean;
+        }
+    >(async ({ mnemonic, password, versions, selectAccount }) => {
+        const valid = await mnemonicValidate(mnemonic);
+        if (!valid) {
+            throw new Error('Mnemonic is not valid.');
+        }
+
+        if (sdk.keychain) {
+            const account = await createStandardTonAccountByMnemonic(
+                context,
+                sdk.storage,
+                mnemonic,
+                {
+                    auth: {
+                        kind: 'keychain'
+                    },
+                    versions
+                }
+            );
+
+            await sdk.keychain.setPassword(
+                (account.auth as AuthKeychain).keychainStoreKey,
+                mnemonic.join(' ')
+            );
+
+            await addAccountToState(account);
+            if (selectAccount) {
+                await selectAccountMutation(account.id);
+            }
+            return account;
+        }
+
+        if (!password) {
+            password = await getPasswordByNotification(sdk);
+        }
+
+        const encryptedMnemonic = await encrypt(mnemonic.join(' '), password);
+        const account = await createStandardTonAccountByMnemonic(context, sdk.storage, mnemonic, {
+            auth: {
+                kind: 'password',
+                encryptedMnemonic
+            },
+            versions
+        });
+
+        await addAccountToState(account);
+        if (selectAccount) {
+            await selectAccountMutation(account.id);
+        }
+        return account;
+    });
+};
+
+export const useCheckIfMnemonicIsMAM = () => {
+    return useMutation(async (mnemonic: string[]) => {
+        try {
+            await TonKeychainRoot.fromMnemonic(mnemonic);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    });
+};
+
+export const useCreateAccountMAM = () => {
+    const sdk = useAppSdk();
+    const context = useAppContext();
+    const { mutateAsync: addAccountToState } = useAddAccountToStateMutation();
+    const { mutateAsync: selectAccountMutation } = useMutateActiveAccount();
+
+    return useMutation<
+        AccountMAM,
+        Error,
+        {
+            mnemonic: string[];
+            selectedDerivations?: number[];
+            password?: string;
+            selectAccount?: boolean;
+        }
+    >(async ({ selectedDerivations, mnemonic, password, selectAccount }) => {
+        if (sdk.keychain) {
+            const account = await createMAMAccountByMnemonic(context, sdk.storage, mnemonic, {
+                selectedDerivations,
+                auth: {
+                    kind: 'keychain'
+                }
+            });
+
+            await sdk.keychain.setPassword(
+                (account.auth as AuthKeychain).keychainStoreKey,
+                mnemonic.join(' ')
+            );
+
+            await addAccountToState(account);
+            if (selectAccount) {
+                await selectAccountMutation(account.id);
+            }
+            return account;
+        }
+
+        if (!password) {
+            password = await getPasswordByNotification(sdk);
+        }
+
+        const encryptedMnemonic = await encrypt(mnemonic.join(' '), password);
+        const account = await createMAMAccountByMnemonic(context, sdk.storage, mnemonic, {
+            selectedDerivations,
+            auth: {
+                kind: 'password',
+                encryptedMnemonic
+            }
+        });
+
+        await addAccountToState(account);
+        if (selectAccount) {
+            await selectAccountMutation(account.id);
+        }
+        return account;
+    });
+};
+
+export const useAddTonWalletVersionToAccount = () => {
+    const accountsStore = useAccountsStorage();
+    const client = useQueryClient();
+
+    return useMutation<
+        TonWalletStandard,
+        Error,
+        {
+            accountId: AccountId;
+            version: WalletVersion;
+        }
+    >(async ({ accountId, version }) => {
+        const account = (await accountsStore.getAccount(accountId))!;
+        if (!isAccountVersionEditable(account)) {
+            throw new Error('Cannot add wallet to this account');
+        }
+        const publicKey = account.activeTonWallet.publicKey;
+        const w = getWalletAddress(publicKey, version);
+        const wallet: TonWalletStandard = {
+            id: w.address.toRawString(),
+            rawAddress: w.address.toRawString(),
+            version,
+            publicKey
+        };
+
+        account.addTonWalletToActiveDerivation(wallet);
+        await accountsStore.updateAccountInState(account);
+        await client.invalidateQueries(anyOfKeysParts(QueryKey.account, account.id, wallet.id));
+        return wallet;
+    });
+};
+
+export const useRemoveTonWalletVersionFromAccount = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    const sdk = useAppSdk();
+
+    return useMutation<
+        void,
+        Error,
+        {
+            accountId: AccountId;
+            walletId: WalletId;
+        }
+    >(async ({ walletId, accountId }) => {
+        const account = (await storage.getAccount(accountId))!;
+        if (!isAccountVersionEditable(account)) {
+            throw new Error('Cannot add wallet to this account');
+        }
+        const { notifications } = sdk;
+        if (notifications) {
+            await Promise.all(
+                account.allTonWallets.map(item =>
+                    notifications.unsubscribe(item.rawAddress).catch(e => console.error(e))
+                )
+            );
+        }
+        account.removeTonWalletFromActiveDerivation(walletId);
+        await storage.updateAccountInState(account);
+        await client.invalidateQueries(anyOfKeysParts(QueryKey.account, account.id, walletId));
+    });
+};
+
+export const useAddAccountToStateMutation = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, Account>(async account => {
+        await storage.addAccountToState(account);
+        await client.invalidateQueries([QueryKey.account]);
+    });
+};
+
+export const useAccountsState = () => {
+    return useAccountsStateQuery().data!;
+};
+
+export const useMutateDeleteAll = () => {
+    const sdk = useAppSdk();
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, void>(async () => {
+        const { notifications } = sdk;
+        if (notifications) {
+            try {
+                await notifications.unsubscribe();
+            } catch (e) {
+                console.error(e);
+            }
+        }
+        await storage.clearAccountFromState();
+        await sdk.storage.clear();
+        await client.invalidateQueries();
+    });
+};
+
+export const useIsPasswordSet = () => {
+    const wallets = useAccountsState();
+    return (wallets || []).some(acc => acc.type === 'mnemonic' && acc.auth.kind === 'password');
+};
+
+export const useMutateLogOut = () => {
+    const storage = useAccountsStorage();
+    const client = useQueryClient();
+    return useMutation<void, Error, AccountId>(async accountId => {
+        await storage.removeAccountFromState(accountId);
+        await client.invalidateQueries([QueryKey.account]);
+        await client.invalidateQueries([QueryKey.pro]);
+    });
+};
+
+export const useMutateRenameAccount = <T extends Account>() => {
+    const client = useQueryClient();
+    const storage = useAccountsStorage();
+
+    return useMutation<T, Error, { id: AccountId; name?: string; emoji?: string }>(async form => {
+        if (form.name !== undefined && form.name.length <= 0) {
+            throw new Error('Missing name');
+        }
+
+        const account = (await storage.getAccount(form.id))!;
+        if (form.emoji) {
+            account.emoji = form.emoji;
+        }
+
+        if (form.name) {
+            account.name = form.name;
+        }
+
+        await storage.updateAccountInState(account);
+
+        await client.invalidateQueries([QueryKey.account]);
+
+        return account.clone() as T;
+    });
+};
+
+export const useMutateRenameAccountDerivation = <T extends AccountMAM>() => {
+    const { mutateAsync } = useMutateRenameAccountDerivations<T>();
+
+    return useMutation<
+        T,
+        Error,
+        { id: AccountId; derivationIndex: number; name?: string; emoji?: string }
+    >(form => {
+        return mutateAsync({
+            name: form.name,
+            emoji: form.emoji,
+            id: form.id,
+            derivationIndexes: [form.derivationIndex]
+        });
+    });
+};
+
+export const useMutateRenameAccountDerivations = <T extends AccountMAM>() => {
+    const client = useQueryClient();
+    const storage = useAccountsStorage();
+
+    return useMutation<
+        T,
+        Error,
+        { id: AccountId; derivationIndexes: number[]; name?: string; emoji?: string }
+    >(async form => {
+        if (form.name !== undefined && form.name.length <= 0) {
+            throw new Error('Missing name');
+        }
+
+        const account = await storage.getAccount(form.id);
+        if (!account || account.type !== 'mam') {
+            throw new Error('Account not found');
+        }
+
+        const derivations = account.allAvailableDerivations.filter(d =>
+            form.derivationIndexes.includes(d.index)
+        )!;
+
+        if (!derivations.length) {
+            throw new Error('Derivation not found');
+        }
+
+        derivations.forEach(derivation => {
+            if (form.emoji) {
+                derivation.emoji = form.emoji;
+            }
+            if (form.name) {
+                derivation.name = form.name;
+            }
+
+            account.updateDerivation(derivation);
+        });
+
+        await storage.updateAccountInState(account);
+
+        await client.invalidateQueries([QueryKey.account]);
+
+        return account.clone() as T;
+    });
+};
+
+export const useWalletAccountInfo = () => {
+    const wallet = useActiveWallet();
+    const { api } = useAppContext();
+    return useQuery<TonapiAccount, Error>([wallet.rawAddress, QueryKey.info], async () => {
+        return new AccountsApi(api.tonApiV2).getAccount({
+            accountId: wallet.rawAddress
+        });
+    });
+};
+
+export const useActiveTonNetwork = () => {
+    return useDevSettings().data?.tonNetwork || Network.MAINNET;
+};
+
+export const useActiveTonWalletConfig = () => {
+    const wallet = useActiveWallet();
+    const sdk = useAppSdk();
+    const network = useActiveTonNetwork();
+    return useQuery<TonWalletConfig, Error>(
+        [wallet.rawAddress, network, QueryKey.walletConfig],
+        async () => getActiveWalletConfig(sdk, wallet.rawAddress, network)
+    );
+};
+
+export const useMutateActiveTonWalletConfig = () => {
+    const wallet = useActiveWallet();
     const sdk = useAppSdk();
     const client = useQueryClient();
-    return useMutation<void, Error, Partial<ActiveWalletConfig>>(async newConfig => {
-        const config = await getActiveWalletConfig(
-            sdk.storage,
-            wallet.active.rawAddress,
-            wallet.network
-        );
+    const network = useActiveTonNetwork();
+    return useMutation<void, Error, Partial<TonWalletConfig>>(async newConfig => {
+        const config = await getActiveWalletConfig(sdk, wallet.rawAddress, network);
 
-        await setActiveWalletConfig(sdk.storage, wallet.active.rawAddress, wallet.network, {
+        await setActiveWalletConfig(sdk.storage, wallet.rawAddress, network, {
             ...config,
             ...newConfig
         });
@@ -200,319 +717,105 @@ export const useMutateActiveWalletConfig = () => {
     });
 };
 
-export const useWalletNftList = () => {
-    const wallet = useWalletContext();
-    const {
-        api: { tonApiV2 }
-    } = useAppContext();
+export const useStandardTonWalletVersions = (publicKey?: string) => {
+    const { api, fiat } = useAppContext();
+    const network = useActiveTonNetwork();
 
-    return useQuery<NFT[], Error>(
-        [wallet.active.rawAddress, QueryKey.nft],
+    return useQuery(
+        [QueryKey.walletVersions, publicKey, network],
         async () => {
-            const { nftItems } = await new AccountsApi(tonApiV2).getAccountNftItems({
-                accountId: wallet.active.rawAddress,
-                offset: 0,
-                limit: 1000,
-                indirectOwnership: true
+            if (!publicKey) {
+                return undefined;
+            }
+            const versions = WalletVersions.map(v => getWalletAddress(publicKey, v, network));
+
+            const response = await new AccountsApi(api.tonApiV2).getAccounts({
+                getAccountsRequest: { accountIds: versions.map(v => v.address.toRawString()) }
             });
-            return nftItems;
+
+            const walletsJettonsBalances = await Promise.all(
+                versions.map(v =>
+                    new AccountsApi(api.tonApiV2).getAccountJettonsBalances({
+                        accountId: v.address.toRawString(),
+                        currencies: [fiat],
+                        supportedExtensions: ['custom_payload']
+                    })
+                )
+            );
+
+            return versions.map((v, index) => ({
+                ...v,
+                tonBalance: response.accounts[index].balance,
+                hasJettons: walletsJettonsBalances[index].balances.some(
+                    b => b.price?.prices && Number(b.balance) > 0
+                )
+            }));
         },
         {
-            refetchInterval: DefaultRefetchInterval,
-            refetchIntervalInBackground: true,
-            refetchOnWindowFocus: true,
             keepPreviousData: true
         }
     );
 };
 
-export const useWalletFilteredNftList = () => {
-    const { data: nfts, ...rest } = useWalletNftList();
-    const { data: walletConfig } = useActiveWalletConfig();
+export const useTonWalletsBalances = (addresses: string[]) => {
+    const { api, fiat } = useAppContext();
+    const network = useActiveTonNetwork();
 
-    const filtered = useMemo(() => {
-        if (!nfts || !walletConfig) return undefined;
-
-        return nfts.filter(item => {
-            const address = item.collection ? item.collection.address : item.address;
-
-            if (isSpamNft(item, walletConfig)) {
-                return false;
-            }
-
-            return !walletConfig?.hiddenNfts.includes(address);
-        });
-    }, [nfts, walletConfig?.trustedNfts, walletConfig?.spamNfts, walletConfig?.hiddenNfts]);
-
-    return {
-        data: filtered,
-        ...rest
-    };
-};
-
-export const useNftDNSLinkData = (nft: NFT) => {
-    const {
-        api: { tonApiV2 }
-    } = useAppContext();
-
-    return useQuery<DnsRecord | null, Error>(
-        ['dns_link', nft?.address],
+    return useQuery(
+        [QueryKey.walletVersions, addresses, network, fiat],
         async () => {
-            const { dns: domainName } = nft;
-            if (!domainName) return null;
+            const groups = addresses.reduce((acc, item) => {
+                const currGroup = acc[acc.length - 1];
+                if (currGroup && currGroup.length < 100) {
+                    currGroup.push(item);
+                } else {
+                    acc.push([item]);
+                }
 
-            try {
-                return await new DNSApi(tonApiV2).dnsResolve({ domainName });
-            } catch (e) {
-                return null;
-            }
-        },
-        { enabled: nft.dns != null }
-    );
-};
-
-const MINUTES_IN_YEAR = 60 * 60 * 24 * 366;
-export const useNftDNSExpirationDate = (nft: NFT) => {
-    const {
-        api: { tonApiV2 }
-    } = useAppContext();
-
-    return useQuery<Date | null, Error>(['dns_expiring', nft.address], async () => {
-        if (!nft.owner?.address || !nft.dns || !isTONDNSDomain(nft.dns)) {
-            return null;
-        }
-
-        try {
-            const result = await new BlockchainApi(tonApiV2).execGetMethodForBlockchainAccount({
-                accountId: nft.address,
-                methodName: 'get_last_fill_up_time'
-            });
-
-            const lastRefill = result?.decoded?.last_fill_up_time;
-            if (lastRefill && typeof lastRefill === 'number' && isFinite(lastRefill)) {
-                return new Date((lastRefill + MINUTES_IN_YEAR) * 1000);
-            }
-
-            return null;
-        } catch (e) {
-            return null;
-        }
-    });
-};
-
-export const useNftCollectionData = (nftOrCollection: NftItem | string) => {
-    const {
-        api: { tonApiV2 }
-    } = useAppContext();
-
-    const collectionAddress =
-        typeof nftOrCollection === 'string' ? nftOrCollection : nftOrCollection.collection?.address;
-
-    return useQuery<NftCollection | null, Error>(
-        [collectionAddress, QueryKey.nftCollection],
-        async () => {
-            if (!collectionAddress) return null;
-
-            return new NFTApi(tonApiV2).getNftCollection({
-                accountId: collectionAddress
-            });
-        },
-        { enabled: !!collectionAddress }
-    );
-};
-
-export const useNftItemData = (address?: string) => {
-    const {
-        api: { tonApiV2 }
-    } = useAppContext();
-
-    return useQuery<NftItem, Error>(
-        [address, QueryKey.nft],
-        async () => {
-            const result = await new NFTApi(tonApiV2).getNftItemByAddress({
-                accountId: address!
-            });
-            return result;
-        },
-        { enabled: address !== undefined }
-    );
-};
-
-export const useWalletTotalBalance = (fiat: FiatCurrencies) => {
-    const [assets] = useAssets();
-    const { data: tonRate } = useRate(CryptoCurrency.TON);
-
-    const client = useQueryClient();
-    return useQuery<BigNumber>(
-        [QueryKey.total, fiat, assets, tonRate],
-        () => {
-            if (!assets) {
-                return new BigNumber(0);
-            }
-            return (
-                getTonFiatAmount(client, fiat, assets)
-                    // .plus(getTRC20FiatAmount(client, fiat, assets)) // TODO: ENABLE TRON
-                    .plus(getJettonsFiatAmount(client, fiat, assets))
-            );
-        },
-        { enabled: !!assets && !!tonRate }
-    );
-};
-
-export interface TokenMeta {
-    address: string;
-    name: string;
-    symbol: string;
-    color: string;
-    image: string;
-    balance: BigNumber;
-    price: number;
-}
-
-export interface TokenDistribution {
-    percent: number;
-    fiatBalance: BigNumber;
-    meta:
-        | TokenMeta
-        | {
-              type: 'others';
-              color: string;
-              tokens: TokenMeta[];
-          };
-}
-
-export function useAssetsDistribution(maxGropusNumber = 10) {
-    const [assets] = useAssets();
-    const { fiat } = useAppContext();
-    const { data: tonRate } = useRate(CryptoCurrency.TON);
-
-    const client = useQueryClient();
-    return useQuery<TokenDistribution[]>(
-        [QueryKey.distribution, fiat, assets, tonRate, maxGropusNumber],
-        () => {
-            if (!assets) {
-                return [];
-            }
-
-            const ton: Omit<TokenDistribution, 'percent'> = {
-                fiatBalance: getTonFiatAmount(client, fiat, assets),
-                meta: convertJettonToTokenMeta(
-                    { isNative: true, balance: assets.ton.info.balance },
-                    getTokenRate(client, fiat, CryptoCurrency.TON)?.prices || 0
+                return acc;
+            }, [] as string[][]);
+            const accountsApi = new AccountsApi(api.tonApiV2);
+            const accounts = (
+                await Promise.all(
+                    groups.map(accountIds =>
+                        accountsApi.getAccounts({
+                            getAccountsRequest: { accountIds }
+                        })
+                    )
                 )
-            };
+            ).flatMap(r => r.accounts);
 
-            const tokensOmited: Omit<TokenDistribution, 'percent'>[] = [ton].concat(
-                assets.ton.jettons.balances.map(b => {
-                    const price =
-                        getTokenRate(client, fiat, Address.parse(b.jetton.address).toString())
-                            ?.prices || 0;
-                    const fiatBalance = shiftedDecimals(b.balance, b.jetton.decimals).multipliedBy(
-                        price
-                    );
-
-                    return {
-                        fiatBalance,
-                        meta: convertJettonToTokenMeta(b, price)
-                    };
-                })
-            );
-
-            const total = tokensOmited.reduce(
-                (acc, t) => t.fiatBalance.plus(acc),
-                new BigNumber(0)
-            );
-
-            tokensOmited.sort((a, b) => b.fiatBalance.minus(a.fiatBalance).toNumber());
-
-            const tokens: TokenDistribution[] = tokensOmited
-                .slice(0, maxGropusNumber - 1)
-                .map(t => ({
-                    ...t,
-                    percent: t.fiatBalance
-                        .dividedBy(total)
-                        .multipliedBy(100)
-                        .decimalPlaces(2)
-                        .toNumber()
-                }));
-
-            const includedPercent = tokens.reduce((acc, t) => t.percent + acc, 0);
-            const includedBalance = tokens.reduce(
-                (acc, t) => t.fiatBalance.plus(acc),
-                new BigNumber(0)
-            );
-
-            if (tokensOmited.length > maxGropusNumber) {
-                tokens.push({
-                    percent: new BigNumber(100 - includedPercent).decimalPlaces(2).toNumber(),
-                    fiatBalance: total.minus(includedBalance),
-                    meta: {
-                        type: 'others',
-                        color: '#9DA2A4',
-                        tokens: tokensOmited
-                            .slice(maxGropusNumber - 1)
-                            .map(t => t.meta) as TokenMeta[]
-                    }
-                });
-            }
-
-            return tokens;
+            return addresses.map((address, index) => ({
+                address,
+                tonBalance: accounts[index].balance
+            }));
         },
-        { enabled: !!assets && !!tonRate }
+        {
+            keepPreviousData: true
+        }
     );
-}
-function tokenColor(tokenAddress: string) {
-    if (tokenAddress === 'TON') {
-        return '#0098EA';
-    }
+};
 
-    const address = Address.parse(tokenAddress);
-
-    if (address.equals(KNOWN_TON_ASSETS.jUSDT)) {
-        return '#2AAF86';
-    }
-
-    const addressId = Number('0x' + address.toRawString().slice(-10));
-
-    const restColors = [
-        '#FF8585',
-        '#FFA970',
-        '#FFC95C',
-        '#85CC7A',
-        '#70A0FF',
-        '#6CCCF5',
-        '#AD89F5',
-        '#F57FF5',
-        '#F576B1',
-        '#293342'
-    ];
-
-    return restColors[addressId % restColors.length];
+export function useInvalidateActiveWalletQueries() {
+    const account = useActiveAccount();
+    const client = useQueryClient();
+    return useMutation(async () => {
+        const activeTonWallet = account.activeTonWallet;
+        await client.invalidateQueries({
+            predicate: query =>
+                query.queryKey.includes(activeTonWallet.id) || query.queryKey.includes(account.id)
+        });
+    });
 }
 
-function convertJettonToTokenMeta(
-    asset: JettonBalance | { isNative: true; balance: number },
-    price: number
-): TokenMeta {
-    if ('isNative' in asset) {
-        return {
-            address: 'TON',
-            name: 'TON',
-            symbol: 'TON',
-            color: tokenColor('TON'),
-            image: 'https://wallet.tonkeeper.com/img/toncoin.svg',
-            price,
-            balance: new BigNumber(asset.balance)
-        };
-    }
-
-    return {
-        address: asset.jetton.address,
-        name: asset.jetton.name,
-        symbol: asset.jetton.symbol,
-        color: tokenColor(asset.jetton.address),
-        image: asset.jetton.image,
-        balance: new BigNumber(asset.balance),
-        price
-    };
+export function useInvalidateGlobalQueries() {
+    const client = useQueryClient();
+    return useMutation(async () => {
+        await client.invalidateQueries(anyOfKeysParts(QueryKey.pro, QueryKey.dashboardData));
+    });
 }
+
+export const useIsActiveWalletWatchOnly = () => {
+    const wallet = useActiveAccount();
+    return wallet.type === 'watch-only';
+};
